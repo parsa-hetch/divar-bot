@@ -1,0 +1,41 @@
+name: Divar Hunter Cron
+
+on:
+  schedule:
+    # اجرا هر ۲۵ دقیقه بین ساعت ۴:۳۰ صبح تا ۷:۳۰ شب به وقت UTC (معادل ۸ صبح تا ۱۱ شب مشهد)
+    - cron: '*/25 4-19 * * *'
+  workflow_dispatch: # قابلیت اجرای دستی از تب Actions
+
+jobs:
+  hunt:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Restore DB cache
+        uses: actions/cache@v4
+        with:
+          path: seen.db
+          key: seen-db-${{ github.run_id }}
+          restore-keys: |
+            seen-db-
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Bot
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          OPENROUTER_MODEL: "auto_free"
+          USE_IMAGES: "0"
+        run: python bot.py --once
