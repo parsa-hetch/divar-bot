@@ -211,7 +211,7 @@ def million(n) -> str:
 
 
 # ----------------------------------------------------------------------------
-# دریافت هوشمند لیست مدل‌های رایگان فعال از OpenRouter
+# دریافت هوشمند لیست مدل‌های رایگان فعال از OpenRouter (با اولویت روتر هوشمند)
 # ----------------------------------------------------------------------------
 async def get_active_free_models(http: httpx.AsyncClient) -> list:
     global CACHED_FREE_MODELS
@@ -222,22 +222,43 @@ async def get_active_free_models(http: httpx.AsyncClient) -> list:
     if env_val.lower() not in ("auto_free", "auto", "free", ""):
         return [m.strip() for m in env_val.split(",") if m.strip()]
 
+    # مدل‌های معروف و معتبر
+    priority_models = [
+        "openrouter/free",  # روتر خودکار اوپن‌روتر (انتخاب هوشمند بهترین مدل رایگان لحظه‌ای)
+        "google/gemini-2.0-flash-lite-001:free",
+        "meta-llama/llama-3.3-70b-instruct:free",
+        "qwen/qwen-2.5-coder-32b-instruct:free",
+        "deepseek/deepseek-r1:free",
+    ]
+
     try:
         r = await http.get("https://openrouter.ai/api/v1/models", timeout=10)
         if r.status_code == 200:
             data = r.json().get("data", [])
-            free_models = [
+            fetched_free = [
                 m["id"] for m in data
                 if isinstance(m, dict) and str(m.get("id", "")).endswith(":free")
             ]
-            if free_models:
-                log(f"دریافت آنلاین {len(free_models)} مدل رایگان فعال از OpenRouter")
-                CACHED_FREE_MODELS = free_models
-                return free_models
+            
+            # فقط نگه داشتن مدل‌های شرکت‌های معتبر و حذف مدل‌های متفرقه/آزمایشی
+            valid_providers = ("google/", "meta-llama/", "qwen/", "deepseek/", "mistralai/", "openrouter/")
+            clean_fetched = [m for m in fetched_free if any(m.startswith(p) for p in valid_providers)]
+
+            # ترکیب روتر هوشمند + مدل‌های معتبر
+            combined = []
+            for m in priority_models + clean_fetched:
+                if m not in combined:
+                    combined.append(m)
+            
+            log(f"دریافت آنلاین {len(combined)} مدل رایگان معتبر (با اولویت openrouter/free)")
+            CACHED_FREE_MODELS = combined
+            return CACHED_FREE_MODELS
     except Exception as e:
         log(f"خطا در دریافت لیست آنلاین مدل‌ها: {e}")
 
-    return ["google/gemini-2.0-flash-lite-001:free"]
+    CACHED_FREE_MODELS = priority_models
+    return priority_models
+
 
 
 
@@ -335,11 +356,14 @@ async def analyze_with_llm(http: httpx.AsyncClient, ad: dict, market: dict) -> d
 
             last_err = f"{model_name} (Code {r.status_code})"
             log(f"مدل {model_name} پاسخ معتبر نداد ({r.status_code}) -> مدل بعدی...")
+            await asyncio.sleep(1)  # ۱ ثانیه مکث برای جلوگیری از اسپم درخواست
 
         except Exception as e:
             log(f"خطا در فراخوانی {model_name}: {e}")
+            await asyncio.sleep(1)  # ۱ ثانیه مکث در صورت بروز خطا
 
     raise RuntimeError(f"هیچ مدل رایگانی پاسخ نداد. آخرین خطا: {last_err}")
+
 
 
 # ----------------------------------------------------------------------------
