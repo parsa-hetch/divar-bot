@@ -211,7 +211,6 @@ def million(n) -> str:
 
 
 # ----------------------------------------------------------------------------
-# ----------------------------------------------------------------------------
 # دریافت هوشمند لیست مدل‌های رایگان فعال از OpenRouter
 # ----------------------------------------------------------------------------
 async def get_active_free_models(http: httpx.AsyncClient) -> list:
@@ -233,13 +232,12 @@ async def get_active_free_models(http: httpx.AsyncClient) -> list:
             ]
             if free_models:
                 log(f"دریافت آنلاین {len(free_models)} مدل رایگان فعال از OpenRouter")
-                # روتر هوشمند رایگان در اولویت اول قرار داده شد
-                CACHED_FREE_MODELS = ["openrouter/free"] + free_models
-                return CACHED_FREE_MODELS
+                CACHED_FREE_MODELS = free_models
+                return free_models
     except Exception as e:
         log(f"خطا در دریافت لیست آنلاین مدل‌ها: {e}")
 
-    return ["openrouter/free"]
+    return ["google/gemini-2.0-flash-lite-001:free"]
 
 
 
