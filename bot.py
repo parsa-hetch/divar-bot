@@ -4,9 +4,9 @@ Divar Hunter - شکارچی آگهی خودرو در دیوار مشهد (دری
 
 جریان کار:
   1) دریافت آگهی‌های جدید خودرو مشهد از MCP دیوار
-  2) فیلتر سریع بر اساس میانه قیمت بازار
+  2) فیلتر سریع بر اساس میانه قیمت بازار و لیست سیاه (تصادفی/تاکسی/سال ساخت)
   3) استعلام آنلاین مدل‌های رایگان و فعال OpenRouter
-  4) تحلیل سریع متنی آگهی با مدل‌های رایگان
+  4) تحلیل سریع متنی آگهی با مدل‌های رایگان و پرامپت سخت‌گیرانه کارشناسی
   5) ارسال کاندیداهای برتر به تلگرام
 """
 
@@ -48,7 +48,6 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "auto_free")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 
-# این دو خط رو دقیقاً جایگزین TELEGRAM_CHAT_ID کن:
 raw_chat_ids = os.getenv("TELEGRAM_CHAT_ID", "")
 CHAT_IDS = [cid.strip() for cid in raw_chat_ids.split(",") if cid.strip()]
 
@@ -63,6 +62,7 @@ MAX_PRICE_TOMAN = env_int("MAX_PRICE_TOMAN", 1_500_000_000)
 
 MIN_DISCOUNT_PERCENT = env_float("MIN_DISCOUNT_PERCENT", 7)
 MIN_PROFIT_TOMAN = env_int("MIN_PROFIT_TOMAN", 20_000_000)
+MIN_PROFIT_SAMAND_TOMAN = env_int("MIN_PROFIT_SAMAND_TOMAN", 35_000_000) # حد سود سخت‌گیرانه‌تر برای سمند
 MIN_CONFIDENCE = env_int("MIN_CONFIDENCE", 40)
 OVERHEAD_TOMAN = env_int("OVERHEAD_TOMAN", 3_000_000)
 
@@ -72,6 +72,15 @@ PACE_SECONDS = env_float("PACE_SECONDS", 1.5)
 
 DB_PATH = BASE_DIR / "seen.db"
 CACHED_FREE_MODELS = []
+
+# لیست سیاه کلمات جهت حذف سریع در فیلتر اولیه
+BLACKLIST_KEYWORDS = [
+    "تصادفی", "چپی", "اوراقی", "شاسی خورده", "شاسی جلو خورده", "شاسی عقب خورده",
+    "تاکسی", "پیکان وانت", "وانت پیکان", "آریسان", "اریسان", "تعویض اتاق", "موتور تعویض", "دور رنگ", "کامل رنگ"
+]
+
+# خودروهای خوش‌خرید بازار
+PREFERRED_CARS = ["پراید", "206", "۲۰۶", "207", "۲۰۷", "کوئیک", "کوییک", "ساینا", "تیبا", "پارس"]
 
 
 def log(*a):
@@ -109,8 +118,34 @@ def mark_seen(db, token: str, status: str, price=None, profit=None):
 
 
 # ----------------------------------------------------------------------------
-# توابع کمکی
+# توابع کمکی و فیلترهای اولیه
 # ----------------------------------------------------------------------------
+def extract_year(text: str) -> int:
+    """استخراج سال ساخت شمسی از عنوان آگهی"""
+    for word in text.split():
+        if word.isdigit() and 1370 <= int(word) <= 1403:
+            return int(word)
+    return 0
+
+
+def is_valid_car_prefilter(title: str, description: str) -> bool:
+    """فیلتر سریع قبل از ارسال به هوش مصنوعی (حذف تصادفی، تاکسی، وانت، زیر ۹۰)"""
+    full_text = f"{title} {description}".lower()
+    
+    # ۱. کلمات کلیدی ممنوعه
+    if any(keyword in full_text for keyword in BLACKLIST_KEYWORDS):
+        return False
+        
+    # ۲. بررسی سال ساخت (زیر ۱۳۹۰ رد می‌شود مگر استثنایی و کلکسیونی باشد)
+    year = extract_year(title)
+    if 0 < year < 1390:
+        pristine_keywords = ["استثنایی", "کلکسیونی", "کم کار واقعی", "عتیقه", "بدون رنگ واقعی"]
+        if not any(k in full_text for k in pristine_keywords):
+            return False
+            
+    return True
+
+
 async def call_tool(session: ClientSession, name: str, args: dict):
     res = await session.call_tool(name, args)
     text = "".join(c.text for c in res.content if getattr(c, "type", "") == "text")
@@ -206,18 +241,25 @@ async def get_active_free_models(http: httpx.AsyncClient) -> list:
 
 
 # ----------------------------------------------------------------------------
-# تحلیل هوش مصنوعی
+# تحلیل هوش مصنوعی (مستر پرامپت کارشناسی)
 # ----------------------------------------------------------------------------
-SYSTEM_PROMPT = """You are a quick screening assistant for a used-car dealer in Mashhad, Iran.
-Your ONLY job is to skim the car ad text and identify potential bargain leads ("shekar") for in-person inspection.
+SYSTEM_PROMPT = """You are a top-tier expert used-car inspector and dealer in Mashhad, Iran.
+Your ONLY job is to skim the car ad text and identify genuine bargain leads ("shekar") for resale profit (at least 10-15% below realistic market value).
 
-Quick screening guidelines:
-- Look for dealbreakers in text: major accidents (تصادفی/شاسی خورده), paper/legal problems (سند مشکل‌دار/وکالتی محض/مشکل پلاک).
-- Look for positive seller urgency signals: urgent sale (فروش فوری/پول لازم/مسافرت/تخفیف پای معامله).
-- Provide a quick rough guess for repairs in Toman (0 if none mentioned or looks minor).
-- Provide a realistic resale value in Toman (close to market median).
+Strict Screening Rules:
+1. Hard Dealbreakers (MUST set is_candidate = false):
+   - Accidents, chassis damage (شاسی خورده/ضربه‌خورده), rollover/salvage (چپی/اوراقی), body frame replacement (تعویض اتاق), engine swap (موتور تعویض), heavy body damage/severe sun fade (آفتاب‌سوختگی شدید).
+   - Taxis, Paykan Pickups, Arisan, low-demand old Chinese cars.
+   - Legal/document issues (سند مشکل‌دار/وکالتی بدون پلاک).
+2. Car Condition & Liquidity:
+   - Priority given to high-liquidity models: Pride, 206, 207, Quick, Saina, Tiba, Pars.
+   - High value for "No Paint" (بی‌رنگ) and low mileage (<150,000 km).
+   - Samand or low-demand cars require a significantly larger profit margin to be considered a candidate.
+3. Pricing & Resale:
+   - Provide a realistic resale value in Toman based on actual market value (do NOT blindly accept inflated median prices if the ad condition is poor).
+   - Estimate repair costs realistically (0 if clean/minor).
 
-Respond ONLY with a valid JSON object matching this format:
+Respond ONLY with a valid JSON object matching this exact format:
 {
   "is_candidate": boolean,
   "confidence": integer 0-100,
@@ -298,7 +340,6 @@ async def analyze_with_llm(http: httpx.AsyncClient, ad: dict, market: dict) -> d
     raise RuntimeError(f"هیچ مدل رایگانی پاسخ نداد. آخرین خطا: {last_err}")
 
 
-
 # ----------------------------------------------------------------------------
 # تلگرام
 # ----------------------------------------------------------------------------
@@ -314,7 +355,6 @@ async def telegram_send(http: httpx.AsyncClient, text: str):
                 log(f"خطا در ارسال پیام به Chat ID {chat_id}: {r.status_code}")
         except Exception as e:
             log(f"خطا در ارسال پیام به {chat_id}: {e}")
-
 
 
 def build_message(title, url, price, market, analysis, profit) -> str:
@@ -377,6 +417,12 @@ async def cycle(session: ClientSession, http: httpx.AsyncClient, db, args):
                 continue
             price = to_int(price)
 
+            # --- پیش‌فیلتر اولیه روی عنوان قبل از فراخوانی MCP
+            card_title = card.get("title") or ""
+            if any(k in card_title for k in BLACKLIST_KEYWORDS):
+                mark_seen(db, token, "skip_blacklist_title", price)
+                continue
+
             # --- محاسبه قیمت بازار
             analyzed += 1
             mp = await call_tool(session, "market_price", {"token": token, "max_sample": 40})
@@ -399,8 +445,15 @@ async def cycle(session: ClientSession, http: httpx.AsyncClient, db, args):
             # --- جزئیات آگهی
             await asyncio.sleep(PACE_SECONDS)
             details = await call_tool(session, "ad_details", {"token": token, "detail": "full"})
-            title = card.get("title") or deep_get(details, "title")
+            title = card.get("title") or deep_get(details, "title") or ""
+            description = deep_get(details, "description") or deep_get(details, "text") or ""
             url = card.get("url") or deep_get(details, "url") or f"https://divar.ir/v/{token}"
+
+            # --- بررسی فیلترهای کامل (تصادفی، سال ساخت، لیست سیاه)
+            if not is_valid_car_prefilter(title, description):
+                mark_seen(db, token, "skip_prefilter", price)
+                log(f"- {token}: رد شد در فیلتر اولیه (تصادفی/سال ساخت/لیست سیاه)")
+                continue
 
             # --- تحلیل هوش مصنوعی
             analysis = await analyze_with_llm(http, details, market)
@@ -409,9 +462,12 @@ async def cycle(session: ClientSession, http: httpx.AsyncClient, db, args):
             profit = resale - price - repair - OVERHEAD_TOMAN
             confidence = to_int(analysis.get("confidence"))
 
+            # شرط سخت‌گیرانه‌تر برای سمند
+            required_profit = MIN_PROFIT_SAMAND_TOMAN if "سمند" in title else MIN_PROFIT_TOMAN
+
             ok = (
                 analysis.get("is_candidate") is True
-                and profit >= MIN_PROFIT_TOMAN
+                and profit >= required_profit
                 and confidence >= MIN_CONFIDENCE
             )
             log(f"- {token}: {discount:.0f}٪ زیر میانه | سود حدود {million(profit)} | {'تایید کاندیدا' if ok else 'رد'}")
@@ -448,7 +504,6 @@ def check_config(args):
         missing.append("OPENROUTER_API_KEY")
     if missing:
         sys.exit("این مقادیر توی فایل .env خالی هستن: " + ", ".join(missing))
-
 
 
 async def run(args):
