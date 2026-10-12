@@ -219,25 +219,23 @@ async def get_active_free_models(http: httpx.AsyncClient) -> list:
         return CACHED_FREE_MODELS
 
     env_val = OPENROUTER_MODEL.strip()
+    # اگر در تنظیمات مدل خاصی تعریف شده باشد
     if env_val.lower() not in ("auto_free", "auto", "free", ""):
         return [m.strip() for m in env_val.split(",") if m.strip()]
 
-    try:
-        r = await http.get("https://openrouter.ai/api/v1/models", timeout=10)
-        if r.status_code == 200:
-            data = r.json().get("data", [])
-            free_models = [
-                m["id"] for m in data
-                if isinstance(m, dict) and str(m.get("id", "")).endswith(":free")
-            ]
-            if free_models:
-                log(f"دریافت آنلاین {len(free_models)} مدل رایگان فعال از OpenRouter")
-                CACHED_FREE_MODELS = free_models
-                return free_models
-    except Exception as e:
-        log(f"خطا در دریافت لیست آنلاین مدل‌ها: {e}")
+    # لیست VIP گلچین‌شده از بهترین و پایدارترین مدل‌های رایگان با سقف مجاز بالا
+    best_free_models = [
+        "google/gemini-2.0-flash-lite-001:free",
+        "google/gemini-2.0-pro-exp-02-05:free",
+        "meta-llama/llama-3.3-70b-instruct:free",
+        "qwen/qwen-2.5-coder-32b-instruct:free",
+        "deepseek/deepseek-r1:free"
+    ]
+    
+    log("استفاده از لیست گلچین‌شده مدل‌های پایدار و رایگان OpenRouter")
+    CACHED_FREE_MODELS = best_free_models
+    return best_free_models
 
-    return ["google/gemini-2.0-flash-lite-001:free"]
 
 
 # ----------------------------------------------------------------------------
