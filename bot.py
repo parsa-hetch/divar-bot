@@ -211,7 +211,7 @@ def million(n) -> str:
 
 
 # ----------------------------------------------------------------------------
-# دریافت هوشمند لیست مدل‌های رایگان فعال از OpenRouter (با اولویت روتر هوشمند)
+# دریافت هوشمند و رتبه‌بندی مدل‌های رایگان از قوی‌ترین به ضعیف‌ترین
 # ----------------------------------------------------------------------------
 async def get_active_free_models(http: httpx.AsyncClient) -> list:
     global CACHED_FREE_MODELS
@@ -222,42 +222,78 @@ async def get_active_free_models(http: httpx.AsyncClient) -> list:
     if env_val.lower() not in ("auto_free", "auto", "free", ""):
         return [m.strip() for m in env_val.split(",") if m.strip()]
 
-    # مدل‌های معروف و معتبر
-    priority_models = [
-        "openrouter/free",  # روتر خودکار اوپن‌روتر (انتخاب هوشمند بهترین مدل رایگان لحظه‌ای)
-        "google/gemini-2.0-flash-lite-001:free",
-        "meta-llama/llama-3.3-70b-instruct:free",
-        "qwen/qwen-2.5-coder-32b-instruct:free",
-        "deepseek/deepseek-r1:free",
+    # کلمات کلیدی مدل‌های بسیار قوی و پرچمدار
+    POWERFUL_MODEL_KEYWORDS = [
+        "llama-3.3-70b", "llama-3.1-70b", "qwen-2.5-72b", "qwen-2.5-32b",
+        "gemini-2.0", "gemini-1.5", "deepseek-r1", "deepseek-v3", 
+        "mistral-large", "gemma-2-27b", "phi-4"
+    ]
+    
+    # کلمات کلیدی مدل‌های ضعیف، آزمایشی و میکروسکوپی (جهت حذف یا جریمه سنگین)
+    TRASH_KEYWORDS = [
+        "apodex", "dots", "inkling", "laguna", "poolside", "lfm", 
+        "small", "mini", "micro", "xs", "0.5b", "1b", "2b", "3b", "preview"
     ]
 
     try:
         r = await http.get("https://openrouter.ai/api/v1/models", timeout=10)
         if r.status_code == 200:
             data = r.json().get("data", [])
-            fetched_free = [
-                m["id"] for m in data
-                if isinstance(m, dict) and str(m.get("id", "")).endswith(":free")
-            ]
             
-            # فقط نگه داشتن مدل‌های شرکت‌های معتبر و حذف مدل‌های متفرقه/آزمایشی
-            valid_providers = ("google/", "meta-llama/", "qwen/", "deepseek/", "mistralai/", "openrouter/")
-            clean_fetched = [m for m in fetched_free if any(m.startswith(p) for p in valid_providers)]
+            scored_models = []
+            for m in data:
+                if not isinstance(m, dict):
+                    continue
+                m_id = str(m.get("id", "")).lower()
+                
+                # فقط بررسی مدل‌های رایگان
+                if not m_id.endswith(":free"):
+                    continue
+                
+                score = 0
+                
+                # ۱. امتیاز ویژه برای غول‌های هوش مصنوعی (۷۰ میلیارد پارامتری و...)
+                for kw in POWERFUL_MODEL_KEYWORDS:
+                    if kw in m_id:
+                        score += 100
+                
+                # ۲. امتیاز برای شرکت‌های معتبر و برتر
+                if any(p in m_id for p in ["meta-llama/", "google/", "qwen/", "deepseek/", "mistralai/"]):
+                    score += 30
+                
+                # ۳. جریمه سنگین برای مدل‌های ضعیف، ریز و ناشناخته
+                for tk in TRASH_KEYWORDS:
+                    if tk in m_id:
+                        score -= 80
+                
+                scored_models.append((score, m_id))
 
-            # ترکیب روتر هوشمند + مدل‌های معتبر
-            combined = []
-            for m in priority_models + clean_fetched:
-                if m not in combined:
-                    combined.append(m)
+            # مرتب‌سازی مدل‌ها: از بالاترین امتیاز به پایین‌ترین امتیاز
+            scored_models.sort(key=lambda x: x[0], reverse=True)
             
-            log(f"دریافت آنلاین {len(combined)} مدل رایگان معتبر (با اولویت openrouter/free)")
-            CACHED_FREE_MODELS = combined
-            return CACHED_FREE_MODELS
+            # فیلتر کردن مدل‌هایی که امتیاز منفی گرفتند (حذف کامل زباله‌ها)
+            best_models = [m[1] for m in scored_models if m[0] > -30]
+            
+            if best_models:
+                # قرار دادن openrouter/free و سپس قوی‌ترین مدل‌ها به ترتیب قدرت
+                final_models = ["openrouter/free"] + [m for m in best_models if m != "openrouter/free"]
+                log(f"دریافت آنلاین {len(final_models)} مدل رایگان (رتبه‌بندی شده از قوی‌ترین به ضعیف‌ترین)")
+                CACHED_FREE_MODELS = final_models
+                return CACHED_FREE_MODELS
+
     except Exception as e:
-        log(f"خطا در دریافت لیست آنلاین مدل‌ها: {e}")
+        log(f"خطا در دریافت و رتبه‌بندی آنلاین مدل‌ها: {e}")
 
-    CACHED_FREE_MODELS = priority_models
-    return priority_models
+    # لیست پشتیبان در صورت قطعی شبکه
+    fallback = [
+        "openrouter/free",
+        "meta-llama/llama-3.3-70b-instruct:free",
+        "qwen/qwen-2.5-coder-32b-instruct:free",
+        "google/gemini-2.0-flash-lite-001:free"
+    ]
+    CACHED_FREE_MODELS = fallback
+    return fallback
+
 
 
 
